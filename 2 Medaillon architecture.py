@@ -13,7 +13,6 @@
 # MAGIC 
 # MAGIC Some of the things we will look at are:
 # MAGIC * Using Auto-loader
-# MAGIC    * Batch and Stream Ingestion
 # MAGIC    * Rescued data
 # MAGIC * Optimizing tables for specific query pattern using OPTIMIZE and ZORDER
 # MAGIC * Incremental updates using MERGE
@@ -232,7 +231,6 @@ import pyspark.sql.functions as F
 
 checkpoint_path = f'{local_data_path}/_checkpoints'
 schema_path = f'{local_data_path}/_schema'
-# write_path = f'{bronze_table_path}/bronze_sales'
 
 spark.sql("drop table if exists bronze_sales")
 
@@ -242,7 +240,6 @@ if refresh_autoloader_datasets:
   # Run these only if you want to start a fresh run!
   dbutils.fs.rm(checkpoint_path,True)
   dbutils.fs.rm(schema_path,True)
-#   dbutils.fs.rm(write_path,True)
   dbutils.fs.rm(autoloader_ingest_path, True)
   
   dbutils.fs.mkdirs(autoloader_ingest_path) #This would be a cloud storage location
@@ -300,7 +297,7 @@ streaming_autoloader = df.writeStream \
 
 # COMMAND ----------
 
-get_incremental_data(autoloader_ingest_path, 'SYD01','2022-01-03')
+get_incremental_data(autoloader_ingest_path, 'SYD01','2022-01-01')
 spark.sql(f"USE DATABASE {database_name};")
 
 # COMMAND ----------
@@ -376,7 +373,7 @@ spark.sql(f"USE DATABASE {database_name};")
 
 # MAGIC %md
 # MAGIC 
-# MAGIC Sales table is nice, but we also have sales items information object that can be split into rows for easier querying
+# MAGIC The sales table looks nice, but we also have sales items information object that can be split into rows for easier querying
 
 # COMMAND ----------
 
@@ -466,6 +463,89 @@ spark.sql(f"USE DATABASE {database_name};")
 # MAGIC 
 # MAGIC select * from silver_sale_items 
 # MAGIC where sale_id = '00139294-b5c5-4af1-9b4c-181c1911ad16';
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC ### SCHEMA EVOLUTION
+# MAGIC 
+# MAGIC In our demo scenario, a given day store sent us records twice. They have decided to close all pending sales and re-send them to update sale status in the lakehouse.
+# MAGIC 
+# MAGIC Make sure your autoloader is still running in streaming mode (or start it again) to process these new records.
+
+# COMMAND ----------
+
+if streaming_autoloader.isActive:
+  print("autoloader still running")
+else:
+  print("autoloader is not running. Please run cell 20 again.")
+
+# COMMAND ----------
+
+get_fixed_records_data(autoloader_ingest_path, 'SYD01','2022-01-01')
+spark.sql(f"USE DATABASE {database_name};")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC `_rescued_data` column contains any parsing errors. There should be none if everything remains as an autoloader default string, but we have provided SchemaHints value before.
+
+# COMMAND ----------
+
+# MAGIC %sql 
+# MAGIC select * from bronze_sales
+# MAGIC where _rescued_data is not null;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC 
+# MAGIC select * from bronze_sales
+# MAGIC where location = 'SYD01'
+# MAGIC and saleid = 'd2e70607-02f7-417d-a5cb-be301c66bb03'
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC 
+# MAGIC -- use rescued data to update ts column values
+# MAGIC 
+# MAGIC update bronze_sales
+# MAGIC set ts = unix_timestamp(_rescued_data:ts)
+# MAGIC where _rescued_data is not null 
+# MAGIC and ts is null
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC 
+# MAGIC select * from bronze_sales
+# MAGIC where location = 'SYD01'
+# MAGIC and saleid = 'd2e70607-02f7-417d-a5cb-be301c66bb03'
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC 
+# MAGIC -- update Silver table with change values and keep single row for each sale transaction by using MERGE
+# MAGIC 
+# MAGIC merge into silver_sales target
+# MAGIC    using v_silver_sales source
+# MAGIC    on target.id = source.id
+# MAGIC when matched and target.row_hash <> source.row_hash then 
+# MAGIC   update set *
+# MAGIC when not matched then
+# MAGIC   insert *
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC 
+# MAGIC select * from silver_sales
+# MAGIC where store_id = 'SYD01'
+# MAGIC and id = 'd2e70607-02f7-417d-a5cb-be301c66bb03'
 
 # COMMAND ----------
 

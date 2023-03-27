@@ -49,6 +49,7 @@ where location = '{location}' and ts_date = '{date}'
     )
     time.sleep(5)
 
+    
 
 def get_fixed_records_data(ingest_path, location, date):
     if uc_status == "Enabled":
